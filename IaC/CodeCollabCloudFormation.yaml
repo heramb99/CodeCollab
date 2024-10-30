@@ -1,0 +1,741 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for creating AWS resources for CodeCollab'
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC-codecollab
+
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: 'internet-gateway-codecollab'
+
+  InternetGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs ''
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: 'public-subnet-1-codecollab'
+  PublicSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select 
+        - 1
+        - !GetAZs ''
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: 'public-subnet-2-codecollab'
+  PrivateSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs ''
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: 'private-subnet-1-codecollab'
+  PrivateSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select 
+        - 1
+        - !GetAZs ''
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: 'private-subnet-2-codecollab'
+  NatGatewayEIP:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+  
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: 'public-route-table-codecollab'
+  DefaultPublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnet1RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+  PublicSubnet2RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+  
+  PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: 'private-route-table-codecollab'
+  DefaultPrivateRoute1:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnet1RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+  PrivateSubnet2RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+
+  ######## all security groups
+  ApplicationLoadBalancerSecurityGroupCF:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: ApplicationLoadBalancerSecurityGroupCF
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 4000
+          ToPort: 4000
+          CidrIp: 0.0.0.0/0
+
+  ContainerFromALBSecurityGroupCF:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: ContainerFromALBSecurityGroupCF
+      GroupDescription: Security group for Container from ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0 
+          ToPort: 65535 
+          SourceSecurityGroupId: !GetAtt ApplicationLoadBalancerSecurityGroupCF.GroupId
+
+  RDSToALBSecurityGroupCF:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: RDSToALBSecurityGroupCF
+      GroupDescription: Security group for RDS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !GetAtt ContainerFromALBSecurityGroupCF.GroupId
+
+  # rds creation ##############################
+  DBSubnetGroupCF:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: db-cf-subnet-group 
+      DBSubnetGroupDescription: "Subnet group for RDS in VPC-codecollab" 
+      SubnetIds:
+        - !Ref PrivateSubnet1  
+        - !Ref PrivateSubnet2  
+
+  DatabaseClusterCF:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DatabaseName: roomsDB
+      DBClusterIdentifier: database-codecollab-cf-cluster  
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.04.1
+      MasterUsername: "admin"
+      MasterUserPassword: "password"
+      DBSubnetGroupName: !Ref DBSubnetGroupCF
+      VpcSecurityGroupIds:
+        - !GetAtt RDSToALBSecurityGroupCF.GroupId
+
+  DatabaseInstanceCF:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DatabaseClusterCF  
+      DBInstanceClass: db.t3.medium
+      Engine: aurora-mysql
+      DBInstanceIdentifier: database-codecollab-cf-instance-1  
+      PubliclyAccessible: false
+
+  ## SNS topic creation ######################
+  SNSTopicCF:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: CodeCollabSNSTopic
+      TopicName: CodeCollabSNSTopic
+
+  # lambda creation ###########################
+  ExecutePythonFunctionCF:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: arn:aws:iam::869736580392:role/LabRole
+      Runtime: python3.11
+      Code:
+        ZipFile: |
+          import json
+          import sys
+          import io
+          import concurrent.futures
+          import json
+
+          def execute_code(code):
+            # Redirect stdout to capture output
+            output_buffer = io.StringIO()
+            sys.stdout = output_buffer
+
+            try:
+              # Execute Python code in a safe environment
+              exec(code)
+
+              # Get the captured output
+              output = output_buffer.getvalue()
+
+            except Exception as e:
+                output = str(e)
+
+            finally:
+              # Restore stdout
+              sys.stdout = sys.__stdout__
+
+            return output
+
+          def handler(event, context):
+              payload = json.loads(event.get("body"))
+              headers =  {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": True
+              }
+                
+              try:
+                # Extract code from event
+                code = payload.get('code')
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                  future = executor.submit(execute_code, code)
+                  try:
+                      # Timeout in seconds
+                      output = future.result(timeout=5)
+                      status_code = 200
+                  except concurrent.futures.TimeoutError:
+                      output = "Code execution timed out."
+                      status_code = 408
+                
+                
+                
+                return {
+                    'statusCode': 200,
+                    'body': ''.join(output),
+                    'headers': headers,
+                    'isBase64Encoded': True,
+                }
+              except Exception as e:
+                print("Error",str(e))
+                return {
+                    'statusCode': 500,
+                    'body': str(e),
+                    'headers': headers,
+                    'isBase64Encoded': True,
+                }
+
+
+
+
+  ExecuteJavascriptFunctionCF:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: arn:aws:iam::869736580392:role/LabRole
+      Runtime: nodejs20.x
+      Code:
+        ZipFile: |
+          const handler = async (event) => {
+          const headers = {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+              "Access-Control-Allow-Credentials": "true"
+          };
+          try {
+              
+                // Extract JavaScript code from the event
+              const parsed_event = JSON.parse(event.body);
+          
+              const javascriptCode = parsed_event.code
+                // Capture console.log output
+                let logs = [];
+                const logInterceptor = (output) => logs.push(output);
+                console.log = logInterceptor;
+                
+                // Execute the JavaScript code
+                eval(javascriptCode);
+                
+                // Restore console.log
+                console.log = console._log;
+                
+                // Return the captured output
+                return {
+                    'statusCode': 200,
+                    'body': logs.join('\n'),
+                    'headers':headers,
+                    'isBase64Encoded':true
+                };
+            } catch (error) {
+                return {
+                    'statusCode': 500,
+                    'body': error.message,
+                    'headers':headers,
+                    'isBase64Encoded':true
+                }
+            }
+          };
+          module.exports = {
+              handler
+          };
+
+  # api gateway #############################
+  ApiGatewayRestApiCF:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: CodeExecutionAPIGateWay
+
+  ExecPyResourceCF:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApiCF
+      ParentId: !GetAtt ApiGatewayRestApiCF.RootResourceId
+      PathPart: execpy
+  
+  ExecPyMethodCF:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref ExecPyResourceCF
+      RestApiId: !Ref ApiGatewayRestApiCF
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ExecutePythonFunctionCF.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+    DependsOn:
+      - ExecPyResourceCF
+      - ExecutePythonFunctionCF
+
+  OptionsPyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref ApiGatewayRestApiCF
+      ResourceId: !Ref ExecPyResourceCF
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - ExecPyResourceCF
+      - ExecutePythonFunctionCF
+  
+  PythonLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - ExecPyMethodCF
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ExecutePythonFunctionCF
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApiCF}/*/POST/execpy
+    
+  
+  ExecJsResourceCF:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApiCF
+      ParentId: !GetAtt ApiGatewayRestApiCF.RootResourceId
+      PathPart: execjs
+  
+  ExecJsMethodCF:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref ExecJsResourceCF
+      RestApiId: !Ref ApiGatewayRestApiCF
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ExecuteJavascriptFunctionCF.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+    DependsOn:
+      - ExecJsResourceCF
+      - ExecuteJavascriptFunctionCF
+
+  OptionsJsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref ApiGatewayRestApiCF
+      ResourceId: !Ref ExecJsResourceCF
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - ExecJsResourceCF
+      - ExecuteJavascriptFunctionCF
+  
+  JavascriptLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - ExecJsMethodCF
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ExecuteJavascriptFunctionCF
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApiCF}/*/POST/execjs
+  
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: 
+      - ExecPyMethodCF
+      - OptionsPyMethod
+      - ExecJsMethodCF
+      - OptionsJsMethod
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApiCF
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: Prod
+      RestApiId: !Ref ApiGatewayRestApiCF
+      DeploymentId: !Ref ApiDeployment
+  
+  #ecs deployment ###########################
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: 'cluster-codecollab'
+
+  TaskFamilyDef1:
+    Type: 'AWS::ECS::TaskDefinition'
+    DependsOn:
+      - LoadBalancerForECS
+      - ApiGatewayRestApiCF
+    Properties:
+      NetworkMode: awsvpc
+      Family: FrontendCodeCollab-CF
+      TaskRoleArn: arn:aws:iam::869736580392:role/LabRole
+      ExecutionRoleArn: arn:aws:iam::869736580392:role/LabRole
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 1024
+      Memory: 2048
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: frontend-container-codecollab
+          Image: 869736580392.dkr.ecr.us-east-1.amazonaws.com/code-collab-frontend
+          Cpu: 512
+          PortMappings:
+            - ContainerPort: 3000
+              HostPort: 3000
+          Memory: 1024
+          Essential: true
+          Environment:
+            - Name: VITE_API_GATEWAY_URL
+              Value: !Join
+              - ""
+              - - "https://"
+                - !Ref ApiGatewayRestApiCF
+                - ".execute-api."
+                - !Ref "AWS::Region"
+                - ".amazonaws.com/Prod/"
+            - Name: VITE_SERVER_URL
+              Value: !Join ["", ["http://", !GetAtt LoadBalancerForECS.DNSName, ":4000"]]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: 'true'
+              awslogs-group:  '/ecs/codecollab-logs'
+              awslogs-region: us-east-1
+              awslogs-stream-prefix: 'ecs/codecollab-frontend'
+  TaskFamilyDef2:
+    Type: 'AWS::ECS::TaskDefinition'
+    DependsOn:
+      - SNSTopicCF
+      - DatabaseInstanceCF
+    Properties:
+      NetworkMode: awsvpc
+      Family: BackendCodeCollab-CF
+      TaskRoleArn: arn:aws:iam::869736580392:role/LabRole
+      ExecutionRoleArn: arn:aws:iam::869736580392:role/LabRole
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 1024
+      Memory: 2048
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: backend-container-codecollab
+          Image: 869736580392.dkr.ecr.us-east-1.amazonaws.com/code-collab-backend
+          Cpu: 512
+          PortMappings:
+            - ContainerPort: 4000
+              HostPort: 4000
+          Memory: 1024
+          Essential: true
+          Environment:
+            - Name: DB_HOST_NAME
+              Value: !GetAtt DatabaseInstanceCF.Endpoint.Address
+            - Name: DB_USER_NAME
+              Value: admin
+            - Name: DB_NAME
+              Value: roomsDB
+            - Name: PORT_NUMBER
+              Value: 4000
+            - Name: DB_PASSWORD
+              Value: password  
+            - Name: REGION   
+              Value: us-east-1     
+            - Name: TOPIC_ARN
+              Value: !Ref SNSTopicCF
+            - Name: CLIENT_ID
+              Value: 2cg8b75229qtjvi18j46onaok3
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: 'true'
+              awslogs-group:  '/ecs/codecollab-logs'
+              awslogs-region: us-east-1
+              awslogs-stream-prefix:  'ecs/codecollab-backend'
+
+  ###service############################
+  Service1:
+    Type: 'AWS::ECS::Service'
+    Properties:
+      Cluster: !Ref ECSCluster
+      CapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Base: 0
+          Weight: 1
+      TaskDefinition: !Ref TaskFamilyDef1
+      ServiceName: frontend-service-cf
+      SchedulingStrategy: REPLICA
+      DesiredCount: 1
+      LoadBalancers:
+        - ContainerName: frontend-container-codecollab
+          ContainerPort: 3000
+          TargetGroupArn: !Ref FrontendTargetGroupCodeCollabCF
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ContainerFromALBSecurityGroupCF
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+      PlatformVersion: LATEST
+    DependsOn:
+      - FrontendCodeServiceLisenter
+
+  Service2:
+    Type: 'AWS::ECS::Service'
+    Properties:
+      Cluster: !Ref ECSCluster
+      CapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Base: 0
+          Weight: 1
+      TaskDefinition: !Ref TaskFamilyDef2
+      ServiceName: backend-service-cf
+      SchedulingStrategy: REPLICA
+      DesiredCount: 1
+      LoadBalancers:
+        - ContainerName: backend-container-codecollab
+          ContainerPort: 4000
+          TargetGroupArn: !Ref BackendTargetGroupCodeCollabCF
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ContainerFromALBSecurityGroupCF
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+      PlatformVersion: LATEST
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+    DependsOn:
+      - BackendCodeServiceLisenter
+
+  ######Load Balancer################
+  LoadBalancerForECS:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Type: application
+      Name: 'codecollab-loadbalancer'
+      SecurityGroups:
+        - !Ref ApplicationLoadBalancerSecurityGroupCF
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+  
+  ##### Listeners #########
+  BackendCodeServiceLisenter:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    DependsOn:
+      - LoadBalancerForECS
+      - BackendTargetGroupCodeCollabCF
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroupCodeCollabCF
+      LoadBalancerArn: !Ref LoadBalancerForECS
+      Port: '4000'
+      Protocol: HTTP
+  FrontendCodeServiceLisenter:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    DependsOn:
+      - LoadBalancerForECS
+      - FrontendTargetGroupCodeCollabCF
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroupCodeCollabCF
+      LoadBalancerArn: !Ref LoadBalancerForECS
+      Port: '80'
+      Protocol: HTTP
+  
+  ##### Target Groups ####
+  FrontendTargetGroupCodeCollabCF:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: 'FrontendCodeCollab-Tg-CF'
+      VpcId: !Ref VPC
+      Port: 3000
+      Protocol: HTTP
+      TargetType: ip
+  BackendTargetGroupCodeCollabCF:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name:  'BackendCodeCollab-Tg-CF'
+      VpcId: !Ref VPC
+      Port: 4000
+      Protocol: HTTP
+      TargetType: ip
+
+Outputs:
+  ApiGatewayInvokeUrl:
+    Description: Invoke URL of the API Gateway
+    Value: !Join
+      - ""
+      - - "https://"
+        - !Ref ApiGatewayRestApiCF
+        - ".execute-api."
+        - !Ref "AWS::Region"
+        - ".amazonaws.com/Prod"  
+    
+  LoadBalancerDomainNane:
+    Description:  Load Balancer URL
+    Value: !GetAtt LoadBalancerForECS.DNSName
+  VPC:
+    Description: VPC Reference
+    Value: !Ref VPC
+    Export:
+      Name: VPC
